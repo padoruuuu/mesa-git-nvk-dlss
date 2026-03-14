@@ -1,0 +1,1218 @@
+# Maintainer: Reza Jahanbakhshi <reza.jahanbakhshi at gmail dot com>
+# Contributor: Lone_Wolf <lone_wolf@klaas-de-kat.nl>
+# Contributor: Armin K. <krejzi at email dot com>
+# Contributor: Kristian Klausen <klausenbusk@hotmail.com>
+# Contributor: Egon Ashrafinia <e.ashrafinia@gmail.com>
+# Contributor: Tavian Barnes <tavianator@gmail.com>
+# Contributor: Jan de Groot <jgc@archlinux.org>
+# Contributor: Andreas Radke <andyrtr@archlinux.org>
+# Contributor: Thomas Dziedzic < gostrc at gmail >
+# Contributor: Antti "Tera" Oja <antti.bofh@gmail.com>
+# Contributor: Diego Jose <diegoxter1006@gmail.com>
+#
+# mesa-git + MR !37898 (VK_NVX_binary_import) merged in.
+# + local VK_NV_low_latency2 (Nvidia Reflex) implementation for NVK.
+# GPU: Turing (RTX 20xx / GTX 16xx) or newer, drm/nouveau (not nvidia.ko).
+#
+# Enable DLSS:   DXVK_ENABLE_NVAPI=1 PROTON_ENABLE_NVAPI=1 %command%
+# Enable Reflex (D3D12 / VKD3D-Proton path):
+#   Exposed automatically — VKD3D-Proton >=2.12 calls vkSetLatencySleepModeNV
+#   etc. directly on the Vulkan driver.  No extra env vars required beyond the
+#   NVAPI ones above.
+# Enable Reflex (D3D11 / DXVK path):
+#   Also requires the VK_LAYER_DXVK_NVAPI_reflex Vulkan layer from dxvk-nvapi
+#   (available in the AUR as dxvk-nvapi or via Proton).  DXVK-NVAPI's D3D11
+#   Reflex path makes "technically invalid" Vulkan calls that the layer
+#   intercepts, enriches, and forwards to the driver.
+
+pkgname=mesa-git-nvk-dlss-reflex
+pkgdesc="Mesa git with VK_NVX_binary_import (NVK DLSS) + VK_NV_low_latency2 (NVK Reflex)"
+pkgver=26.1.0_devel.219857.29e2e4ed640.nvkdlssreflex  # filled by pkgver()
+pkgrel=1
+arch=('x86_64')
+makedepends=(
+    'git'
+    'xorgproto'
+    'libxml2'
+    'libva'
+    'elfutils'
+    'libxrandr'
+    'meson'
+    'ninja'
+    'glslang'
+    'directx-headers'
+    'python-mako'
+    'python-ply'
+    'cbindgen'
+    'wayland-protocols'
+    'python-packaging'
+    'python-pyaml'
+    'llvm'
+    'clang'
+    'libclc'
+    'spirv-llvm-translator'
+    'spirv-tools'
+    'rust'
+    'rust-bindgen'
+)
+depends=(
+    'libdrm'
+    'libxxf86vm'
+    'libxdamage'
+    'libxshmfence'
+    'libelf'
+    'libunwind'
+    'libglvnd'
+    'wayland'
+    'lm_sensors'
+    'vulkan-icd-loader'
+    'zstd'
+    'expat'
+    'gcc-libs'
+    'libxfixes'
+    'libx11'
+    'systemd-libs'
+    'libxext'
+    'libxcb'
+    'glibc'
+    'zlib'
+    'python'
+    'xcb-util-keysyms'
+)
+optdepends=('opengl-man-pages: for the OpenGL API man pages')
+provides=(
+    'vulkan-mesa-layers'
+    'opencl-driver'
+    'opengl-driver'
+    'vulkan-driver'
+    'vulkan-intel'
+    'vulkan-nouveau'
+    'vulkan-radeon'
+    'vulkan-swrast'
+    'vulkan-virtio'
+    'libva-mesa-driver'
+    'mesa-libgl'
+    'mesa'
+    'mesa-git'
+    'vulkan-mesa-device-select'
+    'vulkan-mesa-implicit-layers'
+    'opencl-rusticl-mesa'
+)
+conflicts=(
+    'vulkan-mesa-layers'
+    'opencl-clover-mesa'
+    'vulkan-intel'
+    'vulkan-nouveau'
+    'vulkan-radeon'
+    'vulkan-swrast'
+    'vulkan-virtio'
+    'libva-mesa-driver'
+    'mesa-libgl'
+    'mesa'
+    'mesa-git'
+    'vulkan-mesa-device-select'
+    'vulkan-mesa-implicit-layers'
+    'opencl-rusticl-mesa'
+)
+url="https://www.mesa3d.org"
+license=('custom')
+source=('mesa::git+https://gitlab.freedesktop.org/mesa/mesa.git#branch=main')
+sha256sums=('SKIP')
+b2sums=('SKIP')
+
+options=(!lto !debug)
+
+# ---------------------------------------------------------------------------
+# MR reference: change this to pick up a newer revision of the MR if it is
+# rebased or superseded.  Set to empty string to skip the merge entirely
+# (useful when MR lands in main).
+# ---------------------------------------------------------------------------
+_mr_ref="refs/merge-requests/37898/head"
+
+pkgver() {
+    cd mesa
+    local _ver
+    _ver=$(<VERSION)
+    # Format: <mesa-version>.<commit-count>.<short-hash>.nvkdlssreflex
+    printf '%s.%s.%s.nvkdlssreflex' \
+        "${_ver/-/_}" \
+        "$(git rev-list --count HEAD)" \
+        "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+    if [ -d _build ]; then
+        rm -rf _build
+    fi
+
+    cd mesa
+
+    git config user.email "makepkg@localhost"
+    git config user.name "makepkg"
+
+    # -----------------------------------------------------------------------
+    # Step 1: merge MR !37898 — skip if already in history
+    # -----------------------------------------------------------------------
+    if [ -n "$_mr_ref" ]; then
+        echo "==> Fetching MR $_mr_ref ..."
+        git fetch origin "$_mr_ref"
+        local _mr_head
+        _mr_head=$(git rev-parse FETCH_HEAD)
+
+        if git merge-base --is-ancestor "$_mr_head" HEAD; then
+            echo "==> MR is already part of mesa main — skipping merge."
+        else
+            echo "==> Merging MR (commit $_mr_head) into main..."
+            if ! git merge -X theirs --no-gpg-sign --no-edit FETCH_HEAD; then
+                echo "==> Merge failed; attempting to continue with conflicts resolved by 'ours'..."
+                git merge --abort 2>/dev/null || true
+                git merge -X ours --no-gpg-sign --no-edit FETCH_HEAD
+            fi
+        fi
+    else
+        echo "==> _mr_ref is empty — assuming MR is already in main, skipping merge."
+    fi
+
+    # -----------------------------------------------------------------------
+    # Step 2: nvk_cubin.c — inject ALIGN macro if missing
+    # -----------------------------------------------------------------------
+    local _cubin="src/nouveau/vulkan/nvk_cubin.c"
+    if [ -f "$_cubin" ]; then
+        if grep -q 'define ALIGN' "$_cubin"; then
+            echo "==> nvk_cubin.c: ALIGN macro already present — skipping."
+        else
+            echo "==> nvk_cubin.c: injecting ALIGN macro..."
+            sed -i '1s|^|#ifndef ALIGN\n#define ALIGN(value, alignment) (((value) + (alignment) - 1) \& ~((alignment) - 1))\n#endif\n|' \
+                "$_cubin"
+        fi
+    else
+        echo "==> nvk_cubin.c: file not found — MR may have been refactored, skipping patch."
+    fi
+
+    # -----------------------------------------------------------------------
+    # Step 3: nvk_cmd_dispatch.c — remove stale printf_buffer_addr field
+    # -----------------------------------------------------------------------
+    local _dispatch="src/nouveau/vulkan/nvk_cmd_dispatch.c"
+    if [ -f "$_dispatch" ]; then
+        if grep -q 'printf_buffer_addr' "$_dispatch"; then
+            echo "==> nvk_cmd_dispatch.c: removing printf_buffer_addr..."
+            sed -i '/printf_buffer_addr/d' "$_dispatch"
+        else
+            echo "==> nvk_cmd_dispatch.c: printf_buffer_addr not found — already gone or MR updated, skipping."
+        fi
+    else
+        echo "==> nvk_cmd_dispatch.c: file not found — skipping patch."
+    fi
+
+    # -----------------------------------------------------------------------
+    # Step 4: nak/api.rs — fix max_warps_per_sm signature mismatch
+    # -----------------------------------------------------------------------
+    local _api_rs="src/nouveau/compiler/nak/api.rs"
+    if [ -f "$_api_rs" ]; then
+        python3 - << 'PYEOF'
+import re, pathlib, sys
+
+p = pathlib.Path('src/nouveau/compiler/nak/api.rs')
+s = p.read_text()
+
+OLD_EXACT = (
+    'pub extern "C" fn nak_max_warps_per_sm(num_gprs: u32) -> u32 {\n'
+    '    crate::ir::max_warps_per_sm(num_gprs)\n'
+    '}'
+)
+NEW_BODY = (
+    'pub extern "C" fn nak_max_warps_per_sm(num_gprs: u32) -> u32 {\n'
+    '    let total_regs: u32 = 65536;\n'
+    '    let gprs = num_gprs.max(1).next_multiple_of(8);\n'
+    '    crate::ir::prev_multiple_of((total_regs / 32) / gprs, 4)\n'
+    '}'
+)
+
+if 'let total_regs: u32 = 65536' in s:
+    print("api.rs: already patched — skipping.")
+    sys.exit(0)
+
+if OLD_EXACT in s:
+    p.write_text(s.replace(OLD_EXACT, NEW_BODY))
+    print("api.rs: patched OK (exact match).")
+    sys.exit(0)
+
+pattern = re.compile(
+    r'pub extern "C" fn nak_max_warps_per_sm\(num_gprs: u32\) -> u32 \{[^}]+\}',
+    re.MULTILINE,
+)
+m = pattern.search(s)
+if m:
+    p.write_text(s[:m.start()] + NEW_BODY + s[m.end():])
+    print("api.rs: patched OK (regex fallback).")
+    sys.exit(0)
+
+print("api.rs: nak_max_warps_per_sm not found — skipping patch (may be fine if MR was reworked).",
+      file=sys.stderr)
+sys.exit(0)
+PYEOF
+    else
+        echo "==> api.rs: file not found — skipping patch."
+    fi
+
+    # -----------------------------------------------------------------------
+    # Step 5: Create nvk_nv_low_latency2.c  (v2 — fixes from v1)
+    #
+    # Changes vs v1:
+    #   - vkLatencySleepNV is now truly async: returns immediately and signals
+    #     the app semaphore from a detached background thread, satisfying the
+    #     Vulkan spec requirement ("the command returns immediately").
+    #   - Hash table uses tombstone markers so ll2_erase() does not break
+    #     probe chains for other swapchains that hash to the same slot.
+    #   - Table doubled to 128 slots to reduce collision probability.
+    #   - malloc/free/stdlib.h included for thread arg heap allocation.
+    # -----------------------------------------------------------------------
+    python3 - << 'PYEOF'
+import pathlib, sys
+
+TARGET = pathlib.Path('src/nouveau/vulkan/nvk_nv_low_latency2.c')
+
+if TARGET.exists():
+    existing = TARGET.read_text()
+    if 'll2_sleep_thread' in existing and 'NVK_LL2_TOMBSTONE' in existing:
+        print("==> nvk_nv_low_latency2.c: v2 already present — skipping.")
+        sys.exit(0)
+    else:
+        print("==> nvk_nv_low_latency2.c: stale v1 detected — overwriting with v2.")
+
+SRC = r"""/*
+ * Copyright 2024 Mesa Contributors
+ * SPDX-License-Identifier: MIT
+ *
+ * VK_NV_low_latency2 (NVIDIA Reflex) for NVK  — v2
+ * =================================================
+ * Pure userspace / CPU-side implementation.  No special nouveau kernel uAPI
+ * is required.  The five Vulkan entry points are wired up so that
+ * VKD3D-Proton >=2.12 and DXVK-NVAPI >=0.7 can expose the Reflex
+ * low-latency mode toggle to games running through NVK/Nouveau.
+ *
+ * Design
+ * ------
+ * Per-swapchain state (mode config + last-sleep timestamp + timing history)
+ * is stored in a fixed-size open-addressed hash table keyed on the opaque
+ * VkSwapchainKHR handle.  A single pthread_rwlock protects the table.
+ * Erased slots are marked with a tombstone so probe chains for colliding
+ * swapchains remain intact across create/destroy cycles.
+ *
+ * vkSetLatencySleepModeNV  – stores mode config in the table
+ * vkLatencySleepNV         – spawns a detached thread that enforces
+ *                            minimumIntervalUs via clock_nanosleep and then
+ *                            signals the app's timeline semaphore.  The
+ *                            calling thread returns immediately, satisfying
+ *                            the Vulkan spec ("the command returns
+ *                            immediately").
+ * vkSetLatencyMarkerNV     – records per-frame timestamps in a ring buffer
+ * vkGetLatencyTimingsNV    – returns recorded timing history to the caller
+ * vkQueueNotifyOutOfBandNV – intentional no-op; Nouveau has no OOB scheduler
+ *
+ * Activation
+ * ----------
+ * The extension is advertised unconditionally for all NVK devices (Turing+).
+ * Games should enable it via:
+ *   DXVK_ENABLE_NVAPI=1 PROTON_ENABLE_NVAPI=1 %command%
+ * if using DXVK-NVAPI / VKD3D-Proton to translate D3D12 or D3D11 Reflex.
+ */
+
+/* nvk_entrypoints.h is auto-generated by vk_entrypoints_gen.py during the
+ * Mesa build.  It provides VKAPI_ATTR prototypes for every nvk_FunctionName()
+ * entry point registered in the NVK entrypoints Python file.  The file lives
+ * in the build directory; the meson-generated include paths already point
+ * there so the include just works. */
+#include "nvk_entrypoints.h"
+
+/* nvk_device.h gives us nvk_device_from_handle() and the nvk_device struct
+ * so we can reach the Vulkan dispatch table for SignalSemaphore. */
+#include "nvk_device.h"
+
+#include "util/macros.h"
+#include "vk_log.h"
+#include "vk_util.h"
+
+#include <errno.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/* =========================================================================
+ * Constants
+ * ========================================================================= */
+
+/** Depth of the per-swapchain frame-timing ring buffer. */
+#define NVK_LL2_HIST   64u
+
+/** Number of slots in the global swapchain-keyed hash table.
+ *  Must be a power of two.  128 slots handles many swapchain
+ *  create/destroy cycles before tombstones begin to accumulate. */
+#define NVK_LL2_TABLE 128u
+
+/** Tombstone sentinel — slot was occupied but the swapchain was destroyed.
+ *  (uintptr_t)1 is never a valid dispatchable Vulkan handle. */
+#define NVK_LL2_TOMBSTONE ((VkSwapchainKHR)(uintptr_t)1)
+
+/* =========================================================================
+ * Per-swapchain latency state
+ * ========================================================================= */
+
+struct nvk_ll2_state {
+   /* --- Mode config set by vkSetLatencySleepModeNV ----------------------- */
+   bool     enabled;           /**< lowLatencyMode                          */
+   bool     boost;             /**< lowLatencyBoost (stored, not acted on)  */
+   uint32_t min_interval_us;   /**< minimumIntervalUs                       */
+
+   /* --- Pacing ----------------------------------------------------------- */
+   /** CLOCK_MONOTONIC nanoseconds recorded at the end of the last sleep. */
+   uint64_t last_sleep_ns;
+
+   /* --- Timing history ring buffer --------------------------------------- */
+   VkLatencyTimingsFrameReportNV hist[NVK_LL2_HIST];
+   uint32_t hist_head;    /**< Index of the next slot to be written         */
+   uint32_t hist_count;   /**< Number of valid entries currently stored     */
+};
+
+struct nvk_ll2_entry {
+   VkSwapchainKHR       key; /**< VK_NULL_HANDLE = empty, TOMBSTONE = dead  */
+   struct nvk_ll2_state val;
+};
+
+/* Global table + lock.  Zero-initialised by static storage duration. */
+static pthread_rwlock_t     g_ll2_lock = PTHREAD_RWLOCK_INITIALIZER;
+static struct nvk_ll2_entry g_ll2_tbl[NVK_LL2_TABLE];
+
+/* =========================================================================
+ * Hash-table helpers  (all callers must hold g_ll2_lock appropriately)
+ * ========================================================================= */
+
+static uint32_t
+ll2_hash(VkSwapchainKHR sc)
+{
+   uint64_t v = (uint64_t)(uintptr_t)sc;
+   v ^= v >> 33;
+   v *= (uint64_t)0xff51afd7ed558ccdULL;
+   v ^= v >> 33;
+   return (uint32_t)(v & (NVK_LL2_TABLE - 1));
+}
+
+/**
+ * Find an existing entry or allocate a new slot (reusing tombstones).
+ * Returns NULL only if the table is completely full of live entries.
+ * Caller must hold g_ll2_lock for *writing*.
+ */
+static struct nvk_ll2_state *
+ll2_get_or_create(VkSwapchainKHR sc)
+{
+   const uint32_t h = ll2_hash(sc);
+   struct nvk_ll2_entry *tomb = NULL;
+
+   for (uint32_t i = 0; i < NVK_LL2_TABLE; i++) {
+      struct nvk_ll2_entry *e = &g_ll2_tbl[(h + i) & (NVK_LL2_TABLE - 1)];
+
+      if (e->key == sc)
+         return &e->val;
+
+      /* Track the first tombstone in case we need to reuse it. */
+      if (e->key == NVK_LL2_TOMBSTONE && !tomb)
+         tomb = e;
+
+      if (e->key == VK_NULL_HANDLE) {
+         /* Prefer reusing a tombstone slot to keep probe chains short. */
+         struct nvk_ll2_entry *slot = tomb ? tomb : e;
+         slot->key = sc;
+         memset(&slot->val, 0, sizeof(slot->val));
+         return &slot->val;
+      }
+   }
+   /* Table is full of live entries + tombstones — try to reuse tombstone. */
+   if (tomb) {
+      tomb->key = sc;
+      memset(&tomb->val, 0, sizeof(tomb->val));
+      return &tomb->val;
+   }
+   return NULL;
+}
+
+/**
+ * Find an existing entry.  Tombstones are skipped (probe chain continues);
+ * only VK_NULL_HANDLE terminates the search.
+ * Caller must hold g_ll2_lock for *reading* (or writing).
+ */
+static struct nvk_ll2_state *
+ll2_find(VkSwapchainKHR sc)
+{
+   const uint32_t h = ll2_hash(sc);
+   for (uint32_t i = 0; i < NVK_LL2_TABLE; i++) {
+      struct nvk_ll2_entry *e = &g_ll2_tbl[(h + i) & (NVK_LL2_TABLE - 1)];
+      if (e->key == sc)
+         return &e->val;
+      if (e->key == VK_NULL_HANDLE)
+         return NULL;
+      /* NVK_LL2_TOMBSTONE: keep probing — a live entry may sit beyond it. */
+   }
+   return NULL;
+}
+
+/**
+ * Mark the slot for sc as a tombstone so later probe chains remain valid.
+ * Caller must hold g_ll2_lock for *writing*.
+ */
+static void
+ll2_erase(VkSwapchainKHR sc)
+{
+   const uint32_t h = ll2_hash(sc);
+   for (uint32_t i = 0; i < NVK_LL2_TABLE; i++) {
+      struct nvk_ll2_entry *e = &g_ll2_tbl[(h + i) & (NVK_LL2_TABLE - 1)];
+      if (e->key == sc) {
+         memset(&e->val, 0, sizeof(e->val));
+         e->key = NVK_LL2_TOMBSTONE;
+         return;
+      }
+      if (e->key == VK_NULL_HANDLE)
+         return;
+   }
+}
+
+/* =========================================================================
+ * Frame-report ring-buffer helpers
+ * ========================================================================= */
+
+static VkLatencyTimingsFrameReportNV *
+ll2_frame_get_or_create(struct nvk_ll2_state *s, uint64_t present_id)
+{
+   for (uint32_t i = 0; i < s->hist_count; i++) {
+      const uint32_t idx =
+         (s->hist_head - 1u - i + NVK_LL2_HIST) & (NVK_LL2_HIST - 1u);
+      if (s->hist[idx].presentID == present_id)
+         return &s->hist[idx];
+   }
+
+   const uint32_t slot = s->hist_head;
+   s->hist_head = (slot + 1u) & (NVK_LL2_HIST - 1u);
+   if (s->hist_count < NVK_LL2_HIST)
+      s->hist_count++;
+
+   VkLatencyTimingsFrameReportNV *fr = &s->hist[slot];
+   memset(fr, 0, sizeof(*fr));
+   fr->sType     = VK_STRUCTURE_TYPE_LATENCY_TIMINGS_FRAME_REPORT_NV;
+   fr->presentID = present_id;
+   return fr;
+}
+
+/* =========================================================================
+ * Clock helpers
+ * ========================================================================= */
+
+static inline uint64_t
+monotonic_ns(void)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return (uint64_t)ts.tv_sec * UINT64_C(1000000000)
+        + (uint64_t)ts.tv_nsec;
+}
+
+static inline uint64_t
+monotonic_us(void)
+{
+   return monotonic_ns() / UINT64_C(1000);
+}
+
+/* =========================================================================
+ * Async sleep + semaphore signal
+ *
+ * vkLatencySleepNV must return immediately (Vulkan spec §46.3).  We spawn a
+ * detached thread per call that does the actual clock_nanosleep and then
+ * signals the application's timeline semaphore.
+ *
+ * Thread-creation overhead (~5 µs on Linux) is negligible relative to the
+ * minimum-interval sleep durations games use (typically 500–16 000 µs).
+ * If malloc or pthread_create fail we fall back to a synchronous in-line
+ * signal so the game is never permanently stuck on its semaphore wait.
+ * ========================================================================= */
+
+struct ll2_sleep_args {
+   VkDevice       device;          /**< opaque handle passed to SignalSemaphore */
+   VkSwapchainKHR swapchain;       /**< used to update last_sleep_ns            */
+   VkSemaphore    semaphore;       /**< timeline semaphore to signal             */
+   uint64_t       value;           /**< timeline value to signal                 */
+   uint64_t       wake_target_ns;  /**< absolute CLOCK_MONOTONIC time; 0=ASAP   */
+};
+
+static void *
+ll2_sleep_thread(void *arg)
+{
+   struct ll2_sleep_args *a = (struct ll2_sleep_args *)arg;
+
+   /* Sleep until the wake target if one was given. */
+   if (a->wake_target_ns > 0u) {
+      struct timespec wts = {
+         .tv_sec  = (time_t)(a->wake_target_ns / UINT64_C(1000000000)),
+         .tv_nsec = (long)  (a->wake_target_ns % UINT64_C(1000000000)),
+      };
+      int r;
+      do {
+         r = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wts, NULL);
+      } while (r == EINTR);
+   }
+
+   /* Record actual wake time for the next interval calculation. */
+   const uint64_t wake_actual = monotonic_ns();
+   pthread_rwlock_wrlock(&g_ll2_lock);
+   struct nvk_ll2_state *s = ll2_find(a->swapchain);
+   if (s)
+      s->last_sleep_ns = wake_actual;
+   pthread_rwlock_unlock(&g_ll2_lock);
+
+   /* Signal the application's timeline semaphore. */
+   const VkSemaphoreSignalInfo si = {
+      .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+      .pNext     = NULL,
+      .semaphore = a->semaphore,
+      .value     = a->value,
+   };
+   struct nvk_device *dev = nvk_device_from_handle(a->device);
+   dev->vk.dispatch_table.SignalSemaphore(a->device, &si);
+
+   free(a);
+   return NULL;
+}
+
+/**
+ * Signal the semaphore inline (synchronous fallback for malloc/pthread
+ * failures — ensures the game is never stuck on an unsignalled semaphore).
+ */
+static VkResult
+ll2_signal_sync(VkDevice device,
+                VkSemaphore semaphore,
+                uint64_t    value)
+{
+   const VkSemaphoreSignalInfo si = {
+      .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+      .pNext     = NULL,
+      .semaphore = semaphore,
+      .value     = value,
+   };
+   struct nvk_device *dev = nvk_device_from_handle(device);
+   return dev->vk.dispatch_table.SignalSemaphore(device, &si);
+}
+
+/* =========================================================================
+ * VK_NV_low_latency2 entry points
+ * ========================================================================= */
+
+/**
+ * vkSetLatencySleepModeNV
+ *
+ * Stores or updates the Reflex configuration for a swapchain.
+ * pSleepModeInfo == NULL clears the state (disables Reflex for this chain).
+ */
+VKAPI_ATTR VkResult VKAPI_CALL
+nvk_SetLatencySleepModeNV(VkDevice device,
+                           VkSwapchainKHR swapchain,
+                           const VkLatencySleepModeInfoNV *pSleepModeInfo)
+{
+   pthread_rwlock_wrlock(&g_ll2_lock);
+
+   if (!pSleepModeInfo) {
+      ll2_erase(swapchain);
+      pthread_rwlock_unlock(&g_ll2_lock);
+      return VK_SUCCESS;
+   }
+
+   struct nvk_ll2_state *s = ll2_get_or_create(swapchain);
+   if (!s) {
+      pthread_rwlock_unlock(&g_ll2_lock);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   s->enabled         = (pSleepModeInfo->lowLatencyMode  == VK_TRUE);
+   s->boost           = (pSleepModeInfo->lowLatencyBoost == VK_TRUE);
+   s->min_interval_us = pSleepModeInfo->minimumIntervalUs;
+
+   pthread_rwlock_unlock(&g_ll2_lock);
+   return VK_SUCCESS;
+}
+
+/**
+ * vkLatencySleepNV
+ *
+ * Returns immediately (Vulkan spec requirement).  A detached background
+ * thread enforces minimumIntervalUs via clock_nanosleep and then signals
+ * the application's timeline semaphore.
+ */
+VKAPI_ATTR VkResult VKAPI_CALL
+nvk_LatencySleepNV(VkDevice device,
+                    VkSwapchainKHR swapchain,
+                    const VkLatencySleepInfoNV *pSleepInfo)
+{
+   /* Snapshot pacing parameters under the read lock. */
+   pthread_rwlock_rdlock(&g_ll2_lock);
+   const struct nvk_ll2_state *s = ll2_find(swapchain);
+   const bool     do_pace = s && s->enabled && s->min_interval_us > 0;
+   const uint64_t min_ns  = do_pace
+                            ? (uint64_t)s->min_interval_us * UINT64_C(1000)
+                            : 0u;
+   const uint64_t last_ns = do_pace ? s->last_sleep_ns : 0u;
+   pthread_rwlock_unlock(&g_ll2_lock);
+
+   /* Compute the absolute wake target (0 = signal immediately). */
+   uint64_t wake_target = 0u;
+   if (do_pace && last_ns > 0u) {
+      const uint64_t candidate = last_ns + min_ns;
+      if (candidate > monotonic_ns())
+         wake_target = candidate;
+   }
+
+   /* Allocate args on the heap (freed by the worker thread). */
+   struct ll2_sleep_args *args =
+      (struct ll2_sleep_args *)malloc(sizeof(*args));
+   if (!args)
+      return ll2_signal_sync(device, pSleepInfo->signalSemaphore,
+                             pSleepInfo->value);
+
+   args->device         = device;
+   args->swapchain      = swapchain;
+   args->semaphore      = pSleepInfo->signalSemaphore;
+   args->value          = pSleepInfo->value;
+   args->wake_target_ns = wake_target;
+
+   pthread_t tid;
+   if (pthread_create(&tid, NULL, ll2_sleep_thread, args) != 0) {
+      free(args);
+      return ll2_signal_sync(device, pSleepInfo->signalSemaphore,
+                             pSleepInfo->value);
+   }
+
+   pthread_detach(tid);
+   return VK_SUCCESS;  /* returns immediately — semaphore signalled async */
+}
+
+/**
+ * vkSetLatencyMarkerNV
+ *
+ * Records per-frame timing markers into the ring buffer.
+ */
+VKAPI_ATTR void VKAPI_CALL
+nvk_SetLatencyMarkerNV(VkDevice device,
+                        VkSwapchainKHR swapchain,
+                        const VkSetLatencyMarkerInfoNV *pLatencyMarkerInfo)
+{
+   const uint64_t ts_us = monotonic_us();
+
+   pthread_rwlock_wrlock(&g_ll2_lock);
+
+   struct nvk_ll2_state *s = ll2_find(swapchain);
+   if (!s) {
+      /* Markers can arrive before SetLatencySleepModeNV in some engines. */
+      s = ll2_get_or_create(swapchain);
+      if (!s) {
+         pthread_rwlock_unlock(&g_ll2_lock);
+         return;
+      }
+   }
+
+   VkLatencyTimingsFrameReportNV *fr =
+      ll2_frame_get_or_create(s, pLatencyMarkerInfo->presentID);
+
+   switch (pLatencyMarkerInfo->marker) {
+   case VK_LATENCY_MARKER_SIMULATION_START_NV:
+      fr->simStartTimeUs          = ts_us; break;
+   case VK_LATENCY_MARKER_SIMULATION_END_NV:
+      fr->simEndTimeUs            = ts_us; break;
+   case VK_LATENCY_MARKER_RENDERSUBMIT_START_NV:
+      fr->renderSubmitStartTimeUs = ts_us; break;
+   case VK_LATENCY_MARKER_RENDERSUBMIT_END_NV:
+      fr->renderSubmitEndTimeUs   = ts_us; break;
+   case VK_LATENCY_MARKER_PRESENT_START_NV:
+      fr->presentStartTimeUs      = ts_us;
+      /* Update pacing reference so LatencySleepNV has a real anchor. */
+      s->last_sleep_ns = monotonic_ns();
+      break;
+   case VK_LATENCY_MARKER_PRESENT_END_NV:
+      fr->presentEndTimeUs        = ts_us; break;
+   case VK_LATENCY_MARKER_INPUT_SAMPLE_NV:
+      fr->inputSampleTimeUs       = ts_us; break;
+   case VK_LATENCY_MARKER_OUT_OF_BAND_RENDERSUBMIT_START_NV:
+      fr->renderSubmitStartTimeUs = ts_us; break;
+   case VK_LATENCY_MARKER_OUT_OF_BAND_RENDERSUBMIT_END_NV:
+      fr->renderSubmitEndTimeUs   = ts_us; break;
+   case VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV:
+      fr->presentStartTimeUs      = ts_us; break;
+   case VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_END_NV:
+      fr->presentEndTimeUs        = ts_us; break;
+   case VK_LATENCY_MARKER_TRIGGER_FLASH_NV:
+      break;
+   default:
+      break;
+   }
+
+   pthread_rwlock_unlock(&g_ll2_lock);
+}
+
+/**
+ * vkGetLatencyTimingsNV
+ *
+ * Returns per-frame timing history.  Standard two-call array-query pattern:
+ * first call with pTimings == NULL sets timingCount to the available count.
+ */
+VKAPI_ATTR void VKAPI_CALL
+nvk_GetLatencyTimingsNV(VkDevice device,
+                         VkSwapchainKHR swapchain,
+                         VkGetLatencyMarkerInfoNV *pLatencyMarkerInfo)
+{
+   pthread_rwlock_rdlock(&g_ll2_lock);
+
+   const struct nvk_ll2_state *s = ll2_find(swapchain);
+
+   if (!s || s->hist_count == 0u) {
+      pLatencyMarkerInfo->timingCount = 0u;
+      pthread_rwlock_unlock(&g_ll2_lock);
+      return;
+   }
+
+   if (!pLatencyMarkerInfo->pTimings) {
+      pLatencyMarkerInfo->timingCount = s->hist_count;
+      pthread_rwlock_unlock(&g_ll2_lock);
+      return;
+   }
+
+   const uint32_t out_n =
+      MIN2(pLatencyMarkerInfo->timingCount, s->hist_count);
+   pLatencyMarkerInfo->timingCount = out_n;
+
+   for (uint32_t i = 0u; i < out_n; i++) {
+      const uint32_t src =
+         (s->hist_head - s->hist_count + i + NVK_LL2_HIST) & (NVK_LL2_HIST - 1u);
+      pLatencyMarkerInfo->pTimings[i] = s->hist[src];
+   }
+
+   pthread_rwlock_unlock(&g_ll2_lock);
+}
+
+/**
+ * vkQueueNotifyOutOfBandNV
+ *
+ * Intentional no-op.  Nouveau/NVK has no out-of-band GPU scheduler.
+ */
+VKAPI_ATTR void VKAPI_CALL
+nvk_QueueNotifyOutOfBandNV(VkQueue queue,
+                            const VkOutOfBandQueueTypeInfoNV *pQueueTypeInfo)
+{
+   (void)queue;
+   (void)pQueueTypeInfo;
+}
+"""
+
+TARGET.write_text(SRC)
+print(f"==> Created {TARGET} (v2)")
+PYEOF
+
+    # -----------------------------------------------------------------------
+    # Step 6: Add nvk_nv_low_latency2.c to NVK's meson.build source list
+    # -----------------------------------------------------------------------
+    python3 - << 'PYEOF'
+import re, pathlib, sys
+
+p = pathlib.Path('src/nouveau/vulkan/meson.build')
+if not p.exists():
+    print("==> meson.build not found — skipping NVK meson patch.", file=sys.stderr)
+    sys.exit(0)
+
+s = p.read_text()
+
+if 'nvk_nv_low_latency2.c' in s:
+    print("==> meson.build: nvk_nv_low_latency2.c already listed — skipping.")
+    sys.exit(0)
+
+anchors = [
+    r"'nvk_device\.c'",
+    r"'nvk_buffer\.c'",
+    r"'nvk_cmd_buffer\.c'",
+    r"'nvk_physical_device\.c'",
+]
+
+inserted = False
+for anchor in anchors:
+    m = re.search(anchor, s)
+    if m:
+        insert_pos = m.start()
+        s = s[:insert_pos] + "'nvk_nv_low_latency2.c',\n  " + s[insert_pos:]
+        p.write_text(s)
+        print(f"==> meson.build: inserted nvk_nv_low_latency2.c before '{m.group()}'.")
+        inserted = True
+        break
+
+if not inserted:
+    print("==> meson.build: WARNING — could not find NVK source list anchor.", file=sys.stderr)
+    print("==>              Trying to append to files() call...", file=sys.stderr)
+    m = re.search(r"(files\([^)]+)\)", s, re.DOTALL)
+    if m:
+        close = m.end() - 1
+        s = s[:close] + "\n  'nvk_nv_low_latency2.c',\n" + s[close:]
+        p.write_text(s)
+        print("==> meson.build: appended nvk_nv_low_latency2.c (fallback).")
+    else:
+        print("==> meson.build: FATAL — could not patch meson.build!", file=sys.stderr)
+        sys.exit(1)
+PYEOF
+
+    # -----------------------------------------------------------------------
+    # Step 7: Advertise VK_NV_low_latency2 in nvk_physical_device.c
+    # -----------------------------------------------------------------------
+    python3 - << 'PYEOF'
+import re, pathlib, sys
+
+p = pathlib.Path('src/nouveau/vulkan/nvk_physical_device.c')
+if not p.exists():
+    print("==> nvk_physical_device.c not found — skipping extension patch.", file=sys.stderr)
+    sys.exit(0)
+
+s = p.read_text()
+
+if 'NV_low_latency2' in s:
+    print("==> nvk_physical_device.c: NV_low_latency2 already present — skipping.")
+    sys.exit(0)
+
+NEW_LINE = '\n      .NV_low_latency2 = true,'
+
+# Strategy 1: insert after the last .NV_<n> = <bool>, line
+nv_pat = re.compile(r'(\.NV_[A-Za-z0-9_]+\s*=\s*(?:true|false)\s*,)')
+last_nv = None
+for m in nv_pat.finditer(s):
+    last_nv = m
+
+if last_nv:
+    pos = last_nv.end()
+    s = s[:pos] + NEW_LINE + s[pos:]
+    p.write_text(s)
+    print(f"==> nvk_physical_device.c: NV_low_latency2 inserted after '{last_nv.group()}'.")
+    sys.exit(0)
+
+# Strategy 2: insert after .KHR_swapchain = true,
+m = re.search(r'(\.KHR_swapchain\s*=\s*true\s*,)', s)
+if m:
+    pos = m.end()
+    s = s[:pos] + NEW_LINE + s[pos:]
+    p.write_text(s)
+    print("==> nvk_physical_device.c: NV_low_latency2 inserted after .KHR_swapchain.")
+    sys.exit(0)
+
+# Strategy 3: insert before the closing brace of the last extension block
+ext_block = re.compile(
+    r'((?:^\s*\.[A-Z][A-Za-z0-9_]+\s*=\s*(?:true|false)[^\n]*\n)+)',
+    re.MULTILINE,
+)
+last_block = None
+for m in ext_block.finditer(s):
+    last_block = m
+
+if last_block:
+    pos = last_block.end()
+    s = s[:pos] + NEW_LINE + '\n' + s[pos:]
+    p.write_text(s)
+    print("==> nvk_physical_device.c: NV_low_latency2 inserted (strategy 3).")
+    sys.exit(0)
+
+print("==> nvk_physical_device.c: FATAL — could not locate extension table!", file=sys.stderr)
+sys.exit(1)
+PYEOF
+
+    # -----------------------------------------------------------------------
+    # Step 8: Register VK_NV_low_latency2 entry points in NVK's dispatch table
+    #
+    # This is the critical step.  vulkaninfo shows the extension because
+    # nvk_physical_device.c advertises it (Step 7), but games call
+    # vkGetDeviceProcAddr to validate function pointers before enabling
+    # Reflex.  The dispatch table is auto-generated at build time by
+    # vk_entrypoints_gen.py from a driver-supplied Python file.  If the five
+    # NV_low_latency2 functions are not listed there, the generated
+    # nvk_entrypoints.h will not include them and vkGetDeviceProcAddr returns
+    # NULL — making every game/layer believe Reflex is unsupported.
+    #
+    # Strategy:
+    #   1) Scan every .py file under src/nouveau/vulkan/ to find which one
+    #      is passed to vk_entrypoints_gen() in meson.build.
+    #   2) Parse meson.build with multiple regex patterns to locate the
+    #      custom_target that generates nvk_entrypoints.h/c.
+    #   3) If the file is found, patch it.
+    #   4) If it is NOT found (NVK generates entrypoints differently), create
+    #      nvk_ll2_entrypoints.py and wire it into the meson.build
+    #      custom_target so the build system picks it up automatically.
+    # -----------------------------------------------------------------------
+    python3 - << 'PYEOF'
+import re, pathlib, sys, textwrap
+
+FUNCS = [
+    'SetLatencySleepModeNV',
+    'LatencySleepNV',
+    'SetLatencyMarkerNV',
+    'GetLatencyTimingsNV',
+    'QueueNotifyOutOfBandNV',
+]
+
+base  = pathlib.Path('src/nouveau/vulkan')
+mb_p  = base / 'meson.build'
+
+# ── Diagnostic dump ──────────────────────────────────────────────────────────
+print("==> Step 8 diagnostic: .py files under src/nouveau/vulkan/")
+py_files = sorted(base.glob('*.py'))
+for f in py_files:
+    print(f"==>   {f}")
+if not py_files:
+    print("==>   (none)")
+
+if mb_p.exists():
+    mb = mb_p.read_text()
+    # Print the lines that mention entrypoints so the log is informative.
+    print("==> Step 8 diagnostic: meson.build lines mentioning entrypoints/gen:")
+    for lineno, line in enumerate(mb.splitlines(), 1):
+        if re.search(r'entrypoint|vk_entrypoints_gen|custom_target.*nvk_', line, re.I):
+            print(f"==>   {lineno:4d}: {line}")
+else:
+    mb = ""
+    print("==> Step 8 WARNING: meson.build not found!")
+
+# ── Step 8a: find the existing entrypoints Python file ───────────────────────
+# Strategy 1 – well-known names
+candidates = [
+    base / 'nvk_entrypoints.py',
+    base / 'nvk_device_entrypoints.py',
+    base / 'nvk_cmd_entrypoints.py',
+]
+# Strategy 2 – glob for anything with "entrypoint" in the name
+for f in sorted(base.glob('*entrypoint*.py')):
+    if f not in candidates:
+        candidates.append(f)
+# Strategy 3 – extract filename from meson.build (multiple patterns)
+for pat in [
+    # files('nvk_something.py') inside a vk_entrypoints_gen block
+    r"vk_entrypoints_gen[^)]{0,400}files\(\s*['\"]([^'\"]+\.py)['\"]",
+    # any files('*.py') near 'entrypoint' keyword within 5 lines
+    r"entrypoint[^)]{0,200}files\(\s*['\"]([^'\"]+\.py)['\"]",
+    # plain files('nvk_*.py')
+    r"files\(\s*['\"](\bnvk_[^'\"]+\.py)['\"]",
+]:
+    for m in re.finditer(pat, mb, re.DOTALL | re.IGNORECASE):
+        cand = base / m.group(1)
+        if cand not in candidates:
+            candidates.append(cand)
+            print(f"==>   meson.build regex found candidate: {cand}")
+
+ep_file = None
+for c in candidates:
+    if c.exists():
+        ep_file = c
+        print(f"==> Step 8: using entrypoints file: {ep_file}")
+        break
+
+if ep_file:
+    # ── Patch the existing entrypoints file ──────────────────────────────────
+    s = ep_file.read_text()
+
+    missing = [f for f in FUNCS if f not in s]
+    if not missing:
+        print(f"==> {ep_file.name}: all NV_low_latency2 entry points already present — skipping.")
+        sys.exit(0)
+
+    print(f"==> {ep_file.name}: adding: {missing}")
+
+    # Detect indent from existing entries
+    indent = '    '
+    m = re.search(r"^([ \t]+)['\"][A-Z][A-Za-z0-9]+['\"]", s, re.MULTILINE)
+    if m:
+        indent = m.group(1)
+
+    new_lines = ''.join(f"{indent}'{f}',\n" for f in missing)
+
+    # a) After the last NV/EXT/KHR entry
+    last_nv = None
+    for m in re.finditer(r"[ \t]*['\"][A-Z][A-Za-z0-9]+(NV|EXT|KHR)['\"][,]?[ \t]*\n", s):
+        last_nv = m
+    if last_nv:
+        pos = last_nv.end()
+        s = s[:pos] + new_lines + s[pos:]
+        ep_file.write_text(s)
+        print(f"==> {ep_file.name}: inserted after last NV/EXT/KHR entry.")
+        sys.exit(0)
+
+    # b) Before the last closing ]
+    last_bracket = None
+    for m in re.finditer(r'^\s*\]\s*$', s, re.MULTILINE):
+        last_bracket = m
+    if last_bracket:
+        pos = last_bracket.start()
+        s = s[:pos] + new_lines + s[pos:]
+        ep_file.write_text(s)
+        print(f"==> {ep_file.name}: inserted before closing ']'.")
+        sys.exit(0)
+
+    # c) Append
+    s = s.rstrip('\n') + '\n# VK_NV_low_latency2 — added by PKGBUILD\n' + new_lines
+    ep_file.write_text(s)
+    print(f"==> {ep_file.name}: appended to end of file.")
+    sys.exit(0)
+
+# ── Step 8b: no existing entrypoints .py file found ─────────────────────────
+# This happens when NVK does not yet have a dedicated entrypoints Python file
+# (the extension list is embedded differently in meson.build).
+# We create a minimal nvk_ll2_entrypoints.py and patch it into the
+# vk_entrypoints_gen custom_target in meson.build.
+print("==> Step 8: no existing entrypoints file — creating nvk_ll2_entrypoints.py")
+
+NEW_EP_FILE = base / 'nvk_ll2_entrypoints.py'
+
+# Build the entrypoints file in the format vk_entrypoints_gen.py expects.
+# The generator reads a list called `override_functions` (or similar).
+# We emit both the common formats seen in Mesa drivers so at least one works.
+EP_CONTENT = textwrap.dedent("""\
+    # VK_NV_low_latency2 entry points for NVK — generated by PKGBUILD
+    # vk_entrypoints_gen.py reads the list below to emit dispatch-table
+    # entries pointing to nvk_FunctionName() implementations.
+    DEVICE_COMMANDS = [
+        'SetLatencySleepModeNV',
+        'LatencySleepNV',
+        'SetLatencyMarkerNV',
+        'GetLatencyTimingsNV',
+    ]
+    QUEUE_COMMANDS = [
+        'QueueNotifyOutOfBandNV',
+    ]
+""")
+NEW_EP_FILE.write_text(EP_CONTENT)
+print(f"==> Created {NEW_EP_FILE}")
+
+# Now wire it into meson.build.
+if not mb_p.exists():
+    print("==> Step 8 FATAL: meson.build missing — cannot wire new entrypoints file!", file=sys.stderr)
+    sys.exit(1)
+
+if 'nvk_ll2_entrypoints.py' in mb:
+    print("==> meson.build: nvk_ll2_entrypoints.py already referenced — skipping.")
+    sys.exit(0)
+
+# Find the custom_target that produces nvk_entrypoints.h / nvk_entrypoints.c
+# and inject our file into its `input :` list.
+# Pattern covers both single-line and multi-line input arrays.
+patched = False
+
+# Pattern A: input that already uses files([...]) or files(...)
+# e.g.  input : [vk_entrypoints_gen, files('nvk_entrypoints.py'), ...]
+#   or  input : [vk_entrypoints_gen, 'nvk_entrypoints.py', ...]
+for pat in [
+    # files('existing.py') inside the same input list near nvk_entrypoints
+    r"(custom_target\s*\(\s*['\"]nvk_entrypoints['\"][^)]{0,800}input\s*:\s*\[[^\]]*?)(\])",
+    # any custom_target whose output mentions nvk_entrypoints.h
+    r"(custom_target[^)]{0,200}output\s*:[^)]{0,200}nvk_entrypoints\.h['\"][^)]{0,200}input\s*:\s*\[[^\]]*?)(\])",
+]:
+    m = re.search(pat, mb, re.DOTALL)
+    if m:
+        insert = ",\n    files('nvk_ll2_entrypoints.py')"
+        mb = mb[:m.end(1)] + insert + mb[m.end(1):]
+        mb_p.write_text(mb)
+        print(f"==> meson.build: injected nvk_ll2_entrypoints.py into nvk_entrypoints custom_target input.")
+        patched = True
+        break
+
+if not patched:
+    # Pattern B: append a brand-new vk_entrypoints_gen call for just our functions.
+    # Find where the existing nvk_entrypoints custom_target ends and add ours after.
+    # First try to locate the closing paren of the main custom_target.
+    m = re.search(r"(custom_target\s*\(\s*['\"]nvk_entrypoints['\"].*?\)[ \t]*\n)",
+                  mb, re.DOTALL)
+    if m:
+        insert_pos = m.end()
+        new_target = textwrap.dedent(f"""\
+
+            # VK_NV_low_latency2 extra entry points — injected by PKGBUILD
+            nvk_ll2_entrypoints = custom_target(
+              'nvk_ll2_entrypoints',
+              input  : [vk_entrypoints_gen, files('nvk_ll2_entrypoints.py')],
+              output : ['nvk_ll2_entrypoints.h', 'nvk_ll2_entrypoints.c'],
+              command: [
+                prog_python, '@INPUT0@',
+                '--xml', vk_api_xml,
+                '--proto', '--weak', '--beta',
+                '--out-h', '@OUTPUT0@',
+                '--out-c', '@OUTPUT1@',
+                '@INPUT1@',
+              ],
+            )
+            nvk_files += [nvk_ll2_entrypoints[0], nvk_ll2_entrypoints[1]]
+        """)
+        mb = mb[:insert_pos] + new_target + mb[insert_pos:]
+        mb_p.write_text(mb)
+        print("==> meson.build: added nvk_ll2_entrypoints custom_target (Pattern B).")
+        patched = True
+
+if not patched:
+    # Last resort: print what we need the user to do manually and hard-fail.
+    print("==> Step 8 FATAL: could not auto-patch meson.build.", file=sys.stderr)
+    print("==>   Please inspect src/nouveau/vulkan/meson.build and add", file=sys.stderr)
+    print("==>   'nvk_ll2_entrypoints.py' to the vk_entrypoints_gen custom_target", file=sys.stderr)
+    print("==>   input list, then re-run makepkg.", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+}
+
+build() {
+    local meson_options=(
+        -D android-libbacktrace=disabled
+        -D b_ndebug=true
+        -D b_lto=false
+        -D egl=enabled
+        -D gallium-drivers=r300,r600,radeonsi,nouveau,virgl,svga,softpipe,llvmpipe,i915,iris,crocus,zink
+        -D gallium-extra-hud=true
+        -D gallium-rusticl=true
+        -D gallium-va=enabled
+        -D gbm=enabled
+        -D gles1=disabled
+        -D gles2=enabled
+        -D glvnd=enabled
+        -D glx=dri
+        -D libunwind=enabled
+        -D llvm=enabled
+        -D lmsensors=enabled
+        -D microsoft-clc=disabled
+        -D platforms=x11,wayland
+        -D valgrind=disabled
+        -D video-codecs=all
+        -D vulkan-drivers=amd,intel,intel_hasvk,swrast,virtio,nouveau
+        -D vulkan-layers=device-select,intel-nullhw,overlay,anti-lag
+        -D tools=[]
+        -D zstd=enabled
+        -D buildtype=plain
+        --wrap-mode=nofallback
+        --force-fallback-for=syn,paste,rustc-hash
+        -D prefix=/usr
+        -D sysconfdir=/etc
+        -D legacy-x11=dri2
+    )
+
+    CFLAGS+=' -g1'
+    CXXFLAGS+=' -g1'
+
+    meson setup mesa _build "${meson_options[@]}"
+    meson configure --no-pager _build
+    ninja $NINJAFLAGS -C _build
+}
+
+package() {
+    DESTDIR="${pkgdir}" ninja $NINJAFLAGS -C _build install
+
+    # Remove the overlay control script; the bin dir will be empty after.
+    if [ -f "${pkgdir}/usr/bin/mesa-overlay-control.py" ]; then
+        rm "${pkgdir}/usr/bin/mesa-overlay-control.py"
+    fi
+    if [ -d "${pkgdir}/usr/bin" ] && [ -z "$(ls -A "${pkgdir}/usr/bin")" ]; then
+        rmdir "${pkgdir}/usr/bin"
+    fi
+
+    ln -s /usr/lib/libGLX_mesa.so.0 "${pkgdir}/usr/lib/libGLX_indirect.so.0"
+
+    install -Dm644 "${srcdir}/mesa/docs/license.rst" \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
